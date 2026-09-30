@@ -1,6 +1,6 @@
 # TikTok Curator - Next.js (App Router) Project Specification
 
-> **Instruction for AI / Antigravity:** Read this complete specification and generate the full production-ready Next.js application using React 18/19, TypeScript, and Tailwind CSS. Ensure all components are modular, reactive, and responsive.
+> **Instruction for AI / Antigravity:** Read this complete specification and generate the full production-ready Next.js application using React 18/19, TypeScript, Tailwind CSS, and **Supabase (PostgreSQL)** for cloud persistence. Ensure all components are modular, reactive, and responsive.
 
 ---
 
@@ -10,13 +10,13 @@
 - **Language:** TypeScript (`strict: true`)
 - **Styling:** Tailwind CSS (Dark Mode default, TikTok theme colors `#25F4EE` cyan & `#FE2C55` pink)
 - **Icons:** `lucide-react`
-- **State Management & Persistence:** LocalStorage / React Context (or Zustand) with SSR hydration safety.
+- **Database & Persistence:** **Supabase (PostgreSQL)** with Row Level Security (RLS) + React Context (with safe fallback if env is not set).
 - **Core Functionalities:**
-  1. Manage Topics (Create, Edit, Delete, Filter).
-  2. Save TikTok Videos (URL parsing, ID extraction, title, topic tag, detailed markdown/bullet notes).
+  1. Manage Topics (Create, Edit, Delete, Filter) stored in Supabase `topics` table.
+  2. Save TikTok Videos (URL parsing, ID extraction, title, topic foreign key, markdown/bullet notes) stored in Supabase `videos` table.
   3. Two Viewing Modes:
-     - **Grid View:** Responsive cards showing embedded TikTok frames + quick notes.
-     - **Feed Mode:** Full vertical snap-scroll reel experience (`scroll-snap-type: y mandatory`) mimicking TikTok / Reels, allowing instant scrolling through videos filtered by the active topic.
+     - **Grid View:** Responsive cards showing TikTok preview/player + quick notes.
+     - **Feed Mode:** Full vertical snap-scroll reel experience (`scroll-snap-type: y mandatory`) mimicking TikTok / Reels, allowing instant scrolling through videos filtered by the active topic with single active player management.
 
 ---
 
@@ -28,6 +28,9 @@ tiktok-curator/
 ├── tsconfig.json
 ├── tailwind.config.ts
 ├── postcss.config.mjs
+├── .env.example
+├── .env.local
+├── supabase_schema.sql
 ├── app/
 │   ├── layout.tsx
 │   ├── page.tsx
@@ -51,6 +54,8 @@ tiktok-curator/
 ├── types/
 │   └── index.ts
 └── lib/
+    ├── supabase.ts
+    ├── supabaseService.ts
     ├── storage.ts
     └── utils.ts
 ```
@@ -61,14 +66,14 @@ tiktok-curator/
 
 ```typescript
 export interface Topic {
-  id: string;
+  id: string; // UUID from Supabase or string
   name: string;
   color?: string;
   createdAt: number;
 }
 
 export interface VideoItem {
-  id: string;
+  id: string; // UUID from Supabase or string
   url: string;
   videoId: string;
   title: string;
@@ -88,75 +93,102 @@ export interface ToastMessage {
 
 ---
 
-## 4. Helper Utilities (`lib/utils.ts`)
+## 4. Supabase Database Schema (`supabase_schema.sql`)
 
-```typescript
-/**
- * Extracts TikTok numeric video ID from various TikTok URL patterns:
- * e.g., https://www.tiktok.com/@username/video/7272898779944602922
- * or shortlinks / mobile shares
- */
-export function extractTikTokVideoId(url: string): string | null {
-  if (!url) return null;
-  const match = url.trim().match(/\/video\/(\d+)/);
-  if (match && match[1]) return match[1];
+```sql
+-- Enable UUID extension
+create extension if not exists "uuid-ossp";
 
-  const genericIdMatch = url.trim().match(/(\d{15,22})/);
-  if (genericIdMatch && genericIdMatch[1]) return genericIdMatch[1];
+-- 1. Topics Table
+create table if not exists public.topics (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  color text default '#25F4EE',
+  created_at timestamptz default now() not null
+);
 
-  return null;
-}
+-- 2. Videos Table
+create table if not exists public.videos (
+  id uuid primary key default gen_random_uuid(),
+  url text not null,
+  video_id text not null,
+  title text not null,
+  topic_id uuid references public.topics(id) on delete set null,
+  notes text default '',
+  created_at timestamptz default now() not null
+);
+
+-- Indexes for performance
+create index if not exists idx_videos_topic_id on public.videos(topic_id);
+create index if not exists idx_videos_created_at on public.videos(created_at desc);
+
+-- Enable Row Level Security (RLS)
+alter table public.topics enable row level security;
+alter table public.videos enable row level security;
+
+-- Public access policies (with anon key)
+create policy "Allow public read access on topics" on public.topics for select using (true);
+create policy "Allow public insert on topics" on public.topics for insert with check (true);
+create policy "Allow public update on topics" on public.topics for update using (true);
+create policy "Allow public delete on topics" on public.topics for delete using (true);
+
+create policy "Allow public read access on videos" on public.videos for select using (true);
+create policy "Allow public insert on videos" on public.videos for insert with check (true);
+create policy "Allow public update on videos" on public.videos for update using (true);
+create policy "Allow public delete on videos" on public.videos for delete using (true);
+
+-- Seed initial default topics
+insert into public.topics (id, name, color) values
+  ('b0a1a001-0000-0000-0000-000000000001', 'Nấu ăn & Ẩm thực', '#FE2C55'),
+  ('b0a1a001-0000-0000-0000-000000000002', 'Coding & AI', '#25F4EE'),
+  ('b0a1a001-0000-0000-0000-000000000003', 'Thể thao & Gym', '#F59E0B'),
+  ('b0a1a001-0000-0000-0000-000000000004', 'Du lịch & Khám phá', '#10B981')
+on conflict (id) do nothing;
+
+-- Seed initial default videos
+insert into public.videos (url, video_id, title, topic_id, notes) values
+  (
+    'https://www.tiktok.com/@gordonramsayofficial/video/7036640523091971333',
+    '7036640523091971333',
+    'Bí kíp làm món Bò Wellington Gordon Ramsay',
+    'b0a1a001-0000-0000-0000-000000000001',
+    '• Áp chảo thịt bò thật nhanh để giữ nước ngọt.\n• Nấm băm nhỏ xào cạn nước (duxelles).\n• Cuộn chặt với prosciutto và bột ngàn lớp pastry.\n• Nướng ở nhiệt độ 200°C đến khi vàng giòn.'
+  ),
+  (
+    'https://www.tiktok.com/@fireship_dev/video/7272898779944602922',
+    '7272898779944602922',
+    '10 tính năng JavaScript mới trong 100s',
+    'b0a1a001-0000-0000-0000-000000000002',
+    '• Object.groupBy() để phân nhóm mảng dễ dàng.\n• Array.prototype.toSorted() không làm thay đổi mảng gốc.\n• Promise.withResolvers() cực kỳ tiện lợi khi tạo promise thủ công.'
+  )
+on conflict do nothing;
 ```
 
 ---
 
-## 5. Storage & Initial Mock Data (`lib/storage.ts`)
+## 5. Supabase Client & Service Layer (`lib/supabase.ts`, `lib/supabaseService.ts`)
 
-```typescript
-import { Topic, VideoItem } from '@/types';
-
-export const DEFAULT_TOPICS: Topic[] = [
-  { id: 'top-1', name: 'Nấu ăn & Ẩm thực', createdAt: Date.now() - 30000 },
-  { id: 'top-2', name: 'Coding & AI', createdAt: Date.now() - 20000 },
-  { id: 'top-3', name: 'Thể thao & Gym', createdAt: Date.now() - 10000 },
-];
-
-export const DEFAULT_VIDEOS: VideoItem[] = [
-  {
-    id: 'vid-1',
-    url: 'https://www.tiktok.com/@gordonramsayofficial/video/7036640523091971333',
-    videoId: '7036640523091971333',
-    title: 'Bí kíp làm món Bò Wellington Gordon Ramsay',
-    topicId: 'top-1',
-    notes: '• Áp chảo thịt thật nhanh.\n• Nấm băm nhỏ xào khô nước.\n• Bọc pastry nướng 200 độ C.',
-    createdAt: Date.now() - 100000,
-  },
-  {
-    id: 'vid-2',
-    url: 'https://www.tiktok.com/@fireship_dev/video/7272898779944602922',
-    videoId: '7272898779944602922',
-    title: '10 tính năng JavaScript mới trong 100s',
-    topicId: 'top-2',
-    notes: '• Object.groupBy()\n• Array.toSorted()\n• Không làm thay đổi mảng ban đầu.',
-    createdAt: Date.now() - 50000,
-  },
-];
-```
+- `lib/supabase.ts`: Khởi tạo Supabase client an toàn với SSR và phát hiện biến môi trường `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+- `lib/supabaseService.ts`: Cung cấp các phương thức async CRUD:
+  - `fetchTopicsFromDb()`, `createTopicInDb()`, `updateTopicInDb()`, `deleteTopicFromDb()`
+  - `fetchVideosFromDb()`, `createVideoInDb()`, `updateVideoInDb()`, `deleteVideoFromDb()`
 
 ---
 
 ## 6. Context Provider (`context/CuratorContext.tsx`)
 
-Implement React Context with LocalStorage sync and SSR safety (`useEffect` check):
+React Context kết nối trực tiếp với Supabase (kèm fallback LocalStorage nếu chưa cấu hình key):
 
-- `topics`: List of topics.
-- `videos`: List of videos.
-- `activeTopicId`: Current active topic filter (`'all'` or string ID).
+- `topics`: List of topics từ Supabase `topics`.
+- `videos`: List of videos từ Supabase `videos`.
+- `activeTopicId`: Current active topic filter (`'all'` hoặc UUID).
 - `viewMode`: `'grid'` | `'feed'`.
 - `searchQuery`: Search string.
-- CRUD methods:
-  - `addTopic(name: string)`
-  - `editTopic(id: string, name: string)`
+- `isLoading`: Trạng thái tải từ database.
+- `isSupabaseConnected`: boolean hiển thị trạng thái kết nối Cloud Database.
+- CRUD methods (bất đồng bộ):
+  - `addTopic(name: string, color?: string)`
+  - `editTopic(id: string, name: string, color?: string)`
   - `deleteTopic(id: string)`
   - `addVideo(data: Omit<VideoItem, 'id' | 'createdAt'>)`
   - `editVideo(id: string, data: Partial<VideoItem>)`
@@ -167,180 +199,21 @@ Implement React Context with LocalStorage sync and SSR safety (`useEffect` check
 
 ## 7. Dynamic TikTok Embed Component (`components/TikTokEmbed.tsx`)
 
-Ensure proper re-hydration of TikTok's embed script when mounting or switching videos:
-
-```tsx
-'use client';
-
-import React, { useEffect, useRef } from 'react';
-
-interface Props {
-  url: string;
-  videoId: string;
-}
-
-export const TikTokEmbed: React.FC<Props> = ({ url, videoId }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    // Dynamically insert or reload the TikTok embed script
-    const scriptId = 'tiktok-embed-script';
-    let script = document.getElementById(scriptId) as HTMLScriptElement | null;
-
-    if (!script) {
-      script = document.createElement('script');
-      script.id = scriptId;
-      script.src = 'https://www.tiktok.com/embed.js';
-      script.async = true;
-      document.body.appendChild(script);
-    } else {
-      // Force TikTok re-render on DOM updates if window.tiktok is present
-      (window as any).tiktok?.load?.();
-    }
-  }, [videoId]);
-
-  if (!videoId) {
-    return (
-      <div className="flex flex-col items-center justify-center p-6 text-center text-sm text-gray-400">
-        <p>Không tìm thấy Video ID</p>
-        <a href={url} target="_blank" rel="noreferrer" className="mt-2 text-xs text-rose-500 underline">
-          Mở trực tiếp trên TikTok
-        </a>
-      </div>
-    );
-  }
-
-  return (
-    <div ref={containerRef} className="w-full flex justify-center items-center min-h-[400px]">
-      <blockquote
-        className="tiktok-embed"
-        cite={url}
-        data-video-id={videoId}
-        style={{ maxWidth: '325px', minWidth: '280px', width: '100%', margin: '0 auto' }}
-      >
-        <section>
-          <a target="_blank" rel="noreferrer" href={url}>
-            Đang tải TikTok...
-          </a>
-        </section>
-      </blockquote>
-    </div>
-  );
-};
-```
+Nhúng video trực tiếp qua `/embed/v2/{videoId}` với `referrerPolicy="no-referrer"` và chế độ Poster theo nhu cầu (On-Demand Single Player) nhằm loại bỏ hoàn toàn lỗi rate limit `overload-protect triggered`.
 
 ---
 
 ## 8. TikTok Snap-Scroll Feed Component (`components/VideoFeed.tsx`)
 
-Build the vertical snap-scroll container with keyboard and button navigation:
-
-```tsx
-'use client';
-
-import React, { useRef } from 'react';
-import { useCurator } from '@/context/CuratorContext';
-import { TikTokEmbed } from './TikTokEmbed';
-import { ChevronUp, ChevronDown, ExternalLink, StickyNote } from 'lucide-react';
-
-export const VideoFeed: React.FC = () => {
-  const { filteredVideos, topics, openDetailModal } = useCurator();
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  const handleScrollStep = (direction: 'up' | 'down') => {
-    if (!scrollRef.current) return;
-    const step = scrollRef.current.clientHeight;
-    scrollRef.current.scrollBy({
-      top: direction === 'down' ? step : -step,
-      behavior: 'smooth',
-    });
-  };
-
-  if (filteredVideos.length === 0) {
-    return <div className="text-center py-20 text-gray-400">Không có video trong danh mục này.</div>;
-  }
-
-  return (
-    <div className="flex flex-col items-center justify-center w-full">
-      <div
-        ref={scrollRef}
-        className="w-full max-w-md h-[78vh] sm:h-[82vh] overflow-y-scroll snap-y snap-mandatory rounded-2xl bg-[#090a0d] border border-gray-800 shadow-2xl relative"
-      >
-        {filteredVideos.map((video, index) => {
-          const topic = topics.find((t) => t.id === video.topicId);
-          return (
-            <div
-              key={video.id}
-              className="w-full h-full snap-start snap-always flex flex-col justify-between p-4 border-b border-gray-800 relative bg-[#0e1017]"
-            >
-              {/* Header Info */}
-              <div className="z-10 bg-gradient-to-b from-black/80 to-transparent pb-2">
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 font-semibold">
-                  #{topic?.name || 'General'}
-                </span>
-                <h3 className="text-white font-bold text-sm mt-1.5 line-clamp-1">{video.title}</h3>
-              </div>
-
-              {/* TikTok Iframe Player */}
-              <div className="flex-1 flex items-center justify-center my-auto overflow-y-auto no-scrollbar">
-                <TikTokEmbed url={video.url} videoId={video.videoId} />
-              </div>
-
-              {/* Bottom Card Bar: Notes & Open TikTok */}
-              <div className="z-10 pt-2 border-t border-gray-800/80 bg-gradient-to-t from-black/80 to-transparent">
-                {video.notes && (
-                  <div className="mb-2 p-2 rounded-xl bg-gray-900/90 text-xs text-gray-300 max-h-16 overflow-y-auto">
-                    <span className="text-cyan-400 font-semibold">Ghi chú: </span>
-                    {video.notes}
-                  </div>
-                )}
-                <div className="flex items-center justify-between">
-                  <button
-                    onClick={() => openDetailModal(video)}
-                    className="flex items-center gap-1.5 text-xs text-gray-300 hover:text-white px-3 py-1.5 rounded-lg bg-gray-800"
-                  >
-                    <StickyNote size={13} className="text-cyan-400" /> Chi tiết
-                  </button>
-                  <a
-                    href={video.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg bg-rose-500 text-white hover:bg-rose-600 transition"
-                  >
-                    Xem TikTok <ExternalLink size={12} />
-                  </a>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* External Scroll Controls */}
-      <div className="flex items-center gap-3 mt-4">
-        <button
-          onClick={() => handleScrollStep('up')}
-          className="px-4 py-2 rounded-xl bg-gray-800 text-gray-200 text-xs font-medium hover:bg-gray-700 flex items-center gap-1"
-        >
-          <ChevronUp size={14} /> Trước
-        </button>
-        <button
-          onClick={() => handleScrollStep('down')}
-          className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-rose-500 text-black text-xs font-bold shadow hover:opacity-90 flex items-center gap-1"
-        >
-          Tiếp theo <ChevronDown size={14} />
-        </button>
-      </div>
-    </div>
-  );
-};
-```
+Chế độ lướt dọc snap-scroll rộng rãi (`max-w-2xl`, `h-[89vh]`) với debounce kích hoạt player, công tắc tự động phát và cụm phím điều hướng nổi bên phải trên desktop.
 
 ---
 
-## 9. Next Steps for Implementation
+## 9. Hướng dẫn thiết lập Supabase
 
-1. Place this file (`nextjs_tiktok_curator_spec.md`) in your project root or cursor rules.
-2. In Antigravity / Cursor Composer, invoke:
-   > *"Read `nextjs_tiktok_curator_spec.md` and generate all the source code files according to the folder structure and TypeScript guidelines specified."*
-3. Run `npm run dev` to launch the application at `http://localhost:3000`.
+1. Tạo một project mới tại [supabase.com](https://supabase.com).
+2. Vào **SQL Editor** trên Supabase Dashboard, copy toàn bộ nội dung file `supabase_schema.sql` và nhấn **Run**.
+3. Vào **Project Settings ➔ API**, sao chép:
+   - `Project URL` ➔ gán vào `NEXT_PUBLIC_SUPABASE_URL` trong file `.env.local`.
+   - `anon public key` ➔ gán vào `NEXT_PUBLIC_SUPABASE_ANON_KEY` trong file `.env.local`.
+4. Khởi động ứng dụng bằng `npm run dev`. Toàn bộ dữ liệu sẽ tự động lưu và đồng bộ tức thì trên Supabase!

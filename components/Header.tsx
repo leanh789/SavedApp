@@ -11,6 +11,8 @@ import {
   Search,
   X,
   Sparkles,
+  Database,
+  Cloud,
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
@@ -21,7 +23,7 @@ export const Header: React.FC = () => {
     setSearchQuery,
     openAddModal,
     openTopicsModal,
-    filteredVideos,
+    isSupabaseMode,
   } = useCurator();
 
   return (
@@ -39,9 +41,25 @@ export const Header: React.FC = () => {
               <h1 className="text-lg font-black tracking-tight text-white flex items-center gap-1.5">
                 TikTok <span className="bg-gradient-to-r from-tiktok-cyan to-tiktok-pink bg-clip-text text-transparent">Curator</span>
               </h1>
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-tiktok-pink/20 text-tiktok-pink border border-tiktok-pink/30">
-                PRO
-              </span>
+              
+              {/* Database Status Badge */}
+              {isSupabaseMode ? (
+                <span
+                  title="Đang đồng bộ trực tiếp với Supabase Cloud Database"
+                  className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 cursor-default"
+                >
+                  <Cloud size={10} className="animate-pulse" />
+                  <span>Supabase</span>
+                </span>
+              ) : (
+                <span
+                  title="Đang ở chế độ LocalStorage. Điền NEXT_PUBLIC_SUPABASE_URL và NEXT_PUBLIC_SUPABASE_ANON_KEY trong .env.local để kích hoạt Cloud DB"
+                  className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 cursor-default"
+                >
+                  <Database size={10} />
+                  <span>Local Mode</span>
+                </span>
+              )}
             </div>
             <p className="text-xs text-gray-400 hidden sm:block">
               Lưu trữ & Khám phá video TikTok thông minh
